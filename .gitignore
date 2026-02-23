@@ -1,0 +1,17 @@
+
+venv/
+.venv/
+
+__pycache__/
+
+
+export/*.csv
+*.csv
+
+
+.idea/
+.vscode/
+
+# Файли іспиту
+*.docx
+*.pdf
