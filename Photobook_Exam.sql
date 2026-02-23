@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS books (
 CREATE TABLE IF NOT EXISTS sales (
     id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     employee_id INTEGER NOT NULL,
-    book_isbn VARCHAR(20) NOT NULL,
+    isbn VARCHAR(20) NOT NULL,
     sale_date DATE NOT NULL DEFAULT CURRENT_DATE, -- за замовчуванням ставимо сьогоднішню дату
     actual_price DECIMAL(10, 2) NOT NULL 
         CONSTRAINT check_actual_price_positive CHECK (actual_price > 0),
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS sales (
         
     -- Обмеження створення продажу, якщо книги з таким ISBN не існує (вимога іспиту п.2 функціональність)
     CONSTRAINT fk_sales_book 
-        FOREIGN KEY (book_isbn) 
+        FOREIGN KEY (isbn) 
         REFERENCES books(isbn) 
         ON DELETE CASCADE
 );
@@ -130,7 +130,7 @@ INSERT INTO employees (full_name, position, phone, email) VALUES
 ('Наталія Орлова', 'Адміністратор', '+380950001122', 'nataliaorlova@photo.ua');
 
 -- 3. Створюю базу продажів
-INSERT INTO sales (employee_id, book_isbn, actual_price, sale_date)
+INSERT INTO sales (employee_id, isbn, actual_price, sale_date)
 SELECT 
     (ARRAY[1,2,4,5,7,9,10])[floor(random()*7)+1], 
     (ARRAY['978-1681985725', '978-0374522933', '978-1681981414', '978-1597113397', '978-0241433333'])[floor(random()*5)+1], 
@@ -138,7 +138,7 @@ SELECT
     '2026-01-01'::date + (floor(random()*30) || ' days')::interval
 FROM generate_series(1, 50);
 
-INSERT INTO sales (employee_id, book_isbn, actual_price, sale_date)
+INSERT INTO sales (employee_id, isbn, actual_price, sale_date)
 SELECT 
     (ARRAY[1,2,4,8,8,8])[floor(random()*6)+1], 
     (ARRAY['978-3836521111', '978-3836544412', '978-0500286424', '978-0375505096', '978-0810906631'])[floor(random()*5)+1], 
@@ -146,7 +146,7 @@ SELECT
     '2026-02-01'::date + (floor(random()*27) || ' days')::interval
 FROM generate_series(1, 80);
 
-INSERT INTO sales (employee_id, book_isbn, actual_price, sale_date)
+INSERT INTO sales (employee_id, isbn, actual_price, sale_date)
 SELECT 
     (ARRAY[1,2,4,5,7,8,9,10])[floor(random()*8)+1], 
     (ARRAY['978-1597115117', '978-1597115117', '978-0500411123', '978-0500544471', '978-1597114790'])[floor(random()*5)+1], 
