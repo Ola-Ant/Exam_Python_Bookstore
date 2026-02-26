@@ -15,3 +15,5 @@ export/*.csv
 # Файли іспиту
 *.docx
 *.pdf
+
+.env
