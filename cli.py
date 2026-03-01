@@ -1,19 +1,21 @@
-from validators import validate_year, validate_email, validate_date, validate_date_range
+from validators import validate_year, validate_email, validate_date, validate_date_range, validate_positive_number, validate_text
 from services import export_to_csv
 import repositories as repo
+from models import books as books_table
+from models import employees as emp_table
 
 # Soft delete
 def delete_item_soft(table, label):
     while True:
         val = input(f"Введіть {label} для видалення (або 0 для виходу): ").strip()
         if val == "0":
-            print("\nДію скасовано. Повернення в меню...")
+            print("\nДію скасовано")
             return
         if not val:
-            print(f"Помилка: {label} не може бути порожнім.")
+            print(f"{label} не може бути порожнім")
             continue
         if label == "ID" and not val.isdigit():
-            print("Помилка: ID має бути числом.")
+            print("ID має бути числом.")
             continue
         break
     display_name = ""
@@ -27,7 +29,7 @@ def delete_item_soft(table, label):
             display_name = f"Співробітника ({item['full_name']})"
 
     if not display_name:
-        print(f"\nПомилка. {label} '{val}' не знайдено в базі даних.")
+        print(f"\n{label} '{val}' не знайдено в базі даних")
         input("\nНатисніть Enter, щоб повернутися до меню")
         return
 
@@ -36,7 +38,7 @@ def delete_item_soft(table, label):
     if confirm == 'y':
         col = table.c.isbn if label == "ISBN" else table.c.id
         repo.db_soft_delete(table, col, val)
-        print(f"\n{label} успішно видалено (позначено як видалений).")
+        print(f"\n{label} успішно видалено (позначено як видалений)")
     else:
         print("\nДію скасовано")
 
@@ -52,42 +54,66 @@ def register_sale():
     book = repo.db_get_book_by_isbn(isbn)
 
     if not book:
-        print("Помилка: Книгу не знайдено")
+        print("Книгу з таким ISBN не знайдено")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
 
-    print(f"Вибрано: «{book['title']}»")
+    if book.get('is_deleted'):
+        print(f"\nКнигу «{book['title']}» архівовано. Продаж неможливий")
+        input("\nНатисніть Enter, щоб повернутися до меню")
+        return
+
+    print(f"Вибрано: «{book['title']}» (Ціна в довіднику: {book['retail_price']} грн)")
 
     while True:
-        emp_id_in = input("ID продавця: ").strip()
-        try:
-            emp_id = int(emp_id_in)
-            if repo.db_get_employee_by_id(emp_id):
-                break
-            print("Помилка: Співробітника з таким ID не існує")
-        except ValueError:
-            print("Помилка: ID має бути числом")
+        emp_id_in = input("ID продавця (співробітника): ").strip()
+        if not emp_id_in:
+            print("ID не може бути порожнім")
+            continue
+        if not emp_id_in.isdigit():
+            print("ID має бути числом")
+            continue
+
+        emp_id = int(emp_id_in)
+        emp = repo.db_get_employee_by_id(emp_id)
+        if not emp:
+            print(f"Співробітника з ID {emp_id} не знайдено.")
+            continue
+
+        if emp.get('is_deleted'):
+            print(f"Співробітник {emp['full_name']} звільнений! Оберіть активного продавця")
+            continue
+
+        print(f"Продавець: {emp['full_name']}")
+        break
 
     while True:
-        try:
-            qty_in = input("Кількість [1]: ").strip()
-            qty = int(qty_in) if qty_in else 1
+        qty_in = input("Кількість [1]: ").strip() or "1"
+        ok_qty, msg_qty = validate_positive_number(qty_in, "Кількість")
+        if not ok_qty:
+            print(f"{msg_qty}")
+            continue
+        qty = int(float(qty_in))
+        break
 
-            if qty <= 0:
-                print("Помилка: Кількість має бути більше 0")
-                continue
+    while True:
+        default_price = str(book['retail_price'])
+        price_in = input(f"Ціна [{default_price} грн]: ").strip() or default_price
+        ok_p, msg_p = validate_positive_number(price_in, "Ціна")
+        if not ok_p:
+            print(f"{msg_p}")
+            continue
+        price = float(price_in)
+        break
+    try:
+        total = price * qty
+        repo.db_add_sale(isbn, emp_id, price, qty)
+        print(f"\n{'—' * 45}")
+        print(f"\nОформлено продаж {qty} шт. на суму {total:.2f} грн")
+        print(f"{'—' * 45}")
+    except Exception as e:
+        print(f"\n {e}")
 
-            price_in = input(f"Ціна [{book['retail_price']} грн]: ").strip()
-            price = float(price_in) if price_in else book['retail_price']
-
-            if price < 0:
-                print("Помилка: Ціна не може бути від'ємною")
-                continue
-            break
-        except ValueError:
-            print("Помилка: Вводьте числа для ціни та кількості")
-
-    repo.db_add_sale(isbn, emp_id, price, qty)
-    print(f"\nУспішно! Оформлено продаж {qty} шт. на суму {price * qty:.2f} грн.")
     input("\nНатисніть Enter, щоб повернутися до меню")
 
 # Історія продажів (Звіт 3)
@@ -95,7 +121,9 @@ def show_full_sales_history_report():
     data = repo.db_get_all_sales_history()
     if not data:
         print("Історія продажів порожня")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
+
     print(f"\n{'ПОВНИЙ СПИСОК ПРОДАЖІВ':^65}")
     print(f"{'ID':<5} | {'Дата':<10} | {'Книга':<30} | {'Ціна':<8}")
     print("-" * 65)
@@ -105,11 +133,17 @@ def show_full_sales_history_report():
         t = r['title'][:30]
         print(f"{r['id']:<5} | {d:<10} | {t:<30} | {r['actual_price']:>8.2f}")
 
+    total_revenue = sum(r['actual_price'] for r in data)
+    print("-" * 65)
+    print(f"{'ЗАГАЛЬНА ВИРУЧКА:':<48} | {total_revenue:>8.2f} грн")
+
     confirm = input("\nЗберегти дані у CSV-файл? (y/n): ").strip().lower()
     if confirm == 'y':
         from datetime import datetime
         filename = f"sales_full_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
         export_to_csv(data, filename)
+
+    input("\nНатисніть Enter, щоб повернутися до меню")
 
 # Коригування ціни
 def edit_sale_price_ui():
@@ -124,48 +158,79 @@ def edit_sale_price_ui():
             sale = repo.db_get_sale_by_id(sid)
 
             if not sale:
-                print(f"Помилка: Запису з ID {sid} не знайдено")
+                print(f"Запису з ID {sid} не знайдено")
                 continue
-            print(f"Поточна ціна чека №{sid}: {sale['actual_price']} грн")
+
+            print(f"Поточна ціна продажу №{sid}: {sale['actual_price']} грн")
 
             new_p_in = input("Введіть нову ціну: ").strip()
 
-            if not new_p_in:
-                print("Ціна не може бути порожньою")
+            is_ok, msg = validate_positive_number(new_p_in, "Ціна")
+            if not is_ok:
+                print(f"{msg}")
                 continue
 
             new_p = float(new_p_in)
-            if new_p < 0:
-                print("Ціни мають бути додатними")
-                continue
 
             repo.db_update_sale_price(sid, new_p)
             print(f"Ціну для продажу №{sid} успішно змінено на {new_p} грн")
+
+            input("\nНатисніть Enter, щоб повернутися до меню")
             break
 
         except ValueError:
-            print("Помилка: Вводьте лише числа для ID та ціни")
+            print("ID має бути числом")
+
+# Детальна інформація про продаж
+def show_sale_details():
+    print(f"\n{'=' * 45}\nДЕТАЛЬНА ІНФОРМАЦІЯ ПРО ПРОДАЖ\n{'=' * 45}")
+    sale_id = input("Введіть ID продажу: ").strip()
+
+    if not sale_id.isdigit():
+        print("ID має бути числом")
+        input("\nНатисніть Enter, щоб повернутися до меню")
+        return
+
+    sale = repo.db_get_sale_details(int(sale_id))
+
+    if not sale:
+        print(f"Продаж з ID {sale_id} не знайдено")
+        input("\nНатисніть Enter, щоб повернутися до меню")
+        return
+
+    print(f"\nЗапис №{sale['id']}")
+    print(f"Дата: {sale['sale_date']}")
+    print(f"Книга: {sale['book_title']}")
+    print(f"Продавець: {sale['employee_name']}")
+    print(f"Ціна продажу: {sale['actual_price']:.2f} грн")
+    print(f"Собівартість: {sale['cost_price']:.2f} грн")
+    print(f"Прибуток: {sale['profit']:.2f} грн")
+
+    input("\nНатисніть Enter, щоб повернутися до меню")
 
 # Видалення продажу (повне)
 def delete_sale_ui():
     print(f"\n{'=' * 10} ВИДАЛЕННЯ ПРОДАЖУ {'=' * 10}")
     while True:
         sid_in = input("ID запису для ПОВНОГО видалення (0 - повернутись в меню): ").strip()
+
         if sid_in == "0":
-            break
+            return
+
         try:
             sid = int(sid_in)
             sale = repo.db_get_sale_by_id(sid)
+
             if not sale:
-                print(f"Помилка: Продаж №{sid} не знайдено.")
+                print(f"Продаж №{sid} не знайдено")
                 continue
 
             print(f"\n{'-' * 40}")
             print(f"ЗНАЙДЕНО ПРОДАЖ №{sid}")
-            print(f"Книга: {sale.get('book_title', 'Не вказано')}")
-            print(f"Продавець: {sale.get('employee_name', 'Не вказано')}")
+            print(f"Книга: {sale['book_title']}")
+            print(f"Продавець: {sale['employee_name']}")
             print(f"Сума: {sale['actual_price']} грн.")
-            print(f"Дата: {sale.get('sale_date', '---')}")
+            print(f"Дата: {sale['sale_date']}")
             print(f"{'-' * 40}")
 
             confirm = input(f"Ви впевнені, що хочете видалити його НАЗАВЖДИ? (y/n): ").strip().lower()
@@ -175,11 +240,11 @@ def delete_sale_ui():
                 print(f"Запис №{sid} остаточно видалено з бази.")
                 break
             else:
-                print("Скасовано. Запис залишається в базі.")
+                print("Скасовано (запис залишається в базі)")
                 break
 
         except ValueError:
-            print("Помилка: ID має бути цілим числом.")
+            print("ID має бути цілим числом")
 
     input("\nНатисніть Enter, щоб повернутися до меню")
 
@@ -187,14 +252,19 @@ def delete_sale_ui():
 
 # Каталог книг (Звіт 2)
 def show_all_books_report():
-    print(f"\n{'=' * 55}\nКАТАЛОГ КНИГ\n{'=' * 55}")
+    print(f"\n{'=' * 65}\nКАТАЛОГ КНИГ\n{'=' * 65}")
     rows = repo.db_get_books()
-    if not rows: print("Каталог порожній."); return
+
+    if not rows:
+        print("Каталог порожній")
+        input("\nНатисніть Enter, щоб повернутися до меню")
+        return
+
     print(f"{'ISBN':<13} | {'Назва книги':<30} | {'Ціна':<8}")
-    print("-" * 55)
+    print("-" * 65)
     for r in rows:
         print(f"{r['isbn']:<13} | {r['title'][:30]:<30} | {r['retail_price']:>8.2f} грн")
-    print(f"\n{'-' * 55}")
+    print(f"\n{'-' * 65}")
 
     confirm = input("Зберегти дані у CSV-файл? (y/n): ").strip().lower()
     if confirm == 'y':
@@ -203,19 +273,52 @@ def show_all_books_report():
         filename = f"books_catalog_{timestamp}.csv"
         export_to_csv(rows, filename)
 
+    input("\nНатисніть Enter, щоб повернутися до меню")
+
 # Додати нову книгу
 def add_book_cli():
     print(f"\n{'=' * 45}\nРЕЄСТРАЦІЯ КНИГИ\n{'=' * 45}")
 
     while True:
-        isbn = input("ISBN: ").strip()
+        isbn = input("ISBN (або 0 для виходу): ").strip()
+        if isbn == "0":
+            print("\nРеєстрацію книги скасовано")
+            return
+
+        if not isbn:
+            print("ISBN не може бути порожнім")
+            continue
+
+        existing_book = repo.db_get_book_details(isbn)
+
+        if existing_book:
+            if existing_book.get('is_deleted'):
+                print(f"\nКнига «{existing_book['title']}» знаходиться в архіві.")
+                confirm = input("Бажаєте відновити її в каталозі? (y/n): ").strip().lower()
+
+                if confirm == 'y':
+                    if repo.db_restore_entity(books_table, books_table.c.isbn, isbn):
+                        print(f"Книгу «{existing_book['title']}» успішно відновлено")
+                        input("\nНатисніть Enter, щоб повернутися до меню")
+                        return
+                    else:
+                        return
+                else:
+                    print("Операцію скасовано. Введіть інший ISBN.")
+                    continue
+            else:
+                print(f"Книга з ISBN {isbn} ВЖЕ Є в активному каталозі! Введіть інший")
+                continue
+
+        break
+
+    while True:
         title = input("Назва: ").strip()
         author = input("Автор: ").strip()
         genre = input("Жанр: ").strip()
-
-        if isbn and title and author and genre:
+        if title and author and genre:
             break
-        print("Помилка: Усі текстові поля (ISBN, Назва, Автор, Жанр) мають бути заповнені")
+        print("Усі текстові поля (Назва, Автор, Жанр) мають бути заповнені")
 
     while True:
         yr = input("Рік видання: ")
@@ -223,19 +326,30 @@ def add_book_cli():
         if ok:
             year = int(yr)
             break
-        print(f" {msg}")
+        print(f"{msg}")
 
     while True:
-        try:
-            cost = float(input("Собівартість: "))
-            retail = float(input("Ціна продажу: "))
+        cost_in = input("Собівартість (Cost): ").strip()
+        ok_c, msg_c = validate_positive_number(cost_in, "Собівартість")
+        if ok_c:
+            cost = float(cost_in)
+            break
+        print(f"{msg_c}")
 
-            if cost < 0 or retail < 0:
-                print("Помилка: Ціни мають бути додатними")
+    while True:
+        retail_in = input("Рекомендована ціна (Retail): ").strip()
+        ok_r, msg_r = validate_positive_number(retail_in, "Ціна продажу")
+
+        if ok_r:
+            retail = float(retail_in)
+
+            if retail <= cost:
+                print(f"Рекомендована ціна ({retail}) має бути вищою за собівартість ({cost})")
+                print("Будь ласка, введіть коректну ціну для каталогу")
                 continue
             break
-        except ValueError:
-            print("Помилка: Ціни мають бути числами (наприклад: 250.50)")
+        else:
+            print(f"{msg_r}")
 
     book_info = {
         'isbn': isbn,
@@ -246,15 +360,12 @@ def add_book_cli():
         'cost_price': cost,
         'retail_price': retail
     }
+
     try:
         repo.db_add_book(book_info)
-        print("\n[Успіх]: Книгу успішно збережено в базі!")
+        print("\nКнигу успішно збережено в базі")
     except Exception as e:
-        if "unique" in str(e).lower():
-            print(f"\nКнига з ISBN '{isbn}' вже існує в системі")
-            print("Ви не можете додати дублікат")
-        else:
-            print(f"\n[Помилка бази даних]: {e}")
+        print(f"\n{e}")
 
     input("\nНатисніть Enter, щоб повернутися до меню")
 
@@ -265,11 +376,11 @@ def edit_book_cli():
 
     book = repo.db_get_book_by_isbn(isbn_to_find)
     if not book:
-        print("Книгу з таким ISBN не знайдено.")
+        print("Книгу з таким ISBN не знайдено")
         return
 
     print(f"\nЗнайдено: «{book['title']}»")
-    print("Введіть нові дані (або залишити старе - Enter):")
+    print("Введіть нові дані (або натисність Enter, щоб залишити без змін):")
 
     new_title = input(f"Нова назва [{book['title']}]: ").strip() or book['title']
     new_author = input(f"Новий автор [{book['author']}]: ").strip() or book['author']
@@ -288,99 +399,190 @@ def edit_book_cli():
         print(f"{msg}")
 
     while True:
-        try:
-            raw_cost = input(f"Нова собівартість [{book['cost_price']}]: ").strip()
-            new_cost = float(raw_cost) if raw_cost else book['cost_price']
-
-            raw_retail = input(f"Нова ціна продажу [{book['retail_price']}]: ").strip()
-            new_retail = float(raw_retail) if raw_retail else book['retail_price']
-
-            if new_cost <= 0 or new_retail <= 0:
-                print("Помилка: Ціни мають бути додатними")
-                continue
+        raw_cost = input(f"Нова собівартість [{book['cost_price']}]: ").strip()
+        if not raw_cost:
+            new_cost = book['cost_price']
             break
-        except ValueError:
-            print("Помилка: Вводьте числа для цін")
+
+        ok, msg = validate_positive_number(raw_cost, "Собівартість")
+        if ok:
+            new_cost = float(raw_cost)
+            break
+        print(f"{msg}")
+
+    while True:
+        raw_retail = input(f"Нова ціна продажу [{book['retail_price']}]: ").strip()
+        if not raw_retail:
+            new_retail = book['retail_price']
+        else:
+            ok, msg = validate_positive_number(raw_retail, "Ціна продажу")
+            if not ok:
+                print(f"{msg}")
+                continue
+            new_retail = float(raw_retail)
+
+        if new_retail < new_cost:
+            print(f"Ціна ({new_retail}) не може бути нижчою за собівартість ({new_cost})!")
+            continue
+        break
 
     updated_info = {
-        'title': new_title, 'author': new_author, 'genre': new_genre,
-        'year_pub': new_year, 'cost_price': new_cost, 'retail_price': new_retail
+        'title': new_title,
+        'author': new_author,
+        'genre': new_genre,
+        'year_pub': new_year,
+        'cost_price': new_cost,
+        'retail_price': new_retail
     }
 
-    repo.db_update_book(isbn_to_find, updated_info)
-    print(f"\nДані успішно оновлено!")
+    try:
+        repo.db_update_book(isbn_to_find, updated_info)
+        print(f"\nДані успішно оновлено!")
+
+    except Exception as e:
+        print(f"\nНе вдалося оновити дані: {e}")
+
+    input("\nНатисніть Enter, щоб повернутися до меню")
+
+# Детальна інформація про книгу
+def show_book_details():
+    print(f"\n{'=' * 45}\nДЕТАЛЬНА ІНФОРМАЦІЯ ПРО КНИГУ\n{'=' * 45}")
+    isbn = input("Введіть ISBN книги: ").strip()
+    book = repo.db_get_book_details(isbn)
+
+    if not book:
+        print(f"Книгу з ISBN '{isbn}' не знайдено.")
+    else:
+        margin = book['retail_price'] - book['cost_price']
+
+        print(f"\nНазва: {book['title']}")
+        print(f"Автор: {book['author']}")
+        print(f"Жанр: {book['genre']}")
+        print(f"Рік: {book['year_pub']}")
+        print(f"{'-' * 20}")
+        print(f"Собівартість: {book['cost_price']} грн")
+        print(f"Ціна за прайсом: {book['retail_price']} грн")
+        print(f"Очікуваний прибуток: {margin} грн")
+        print(f"{'-' * 20}")
+
+        if book.get('is_deleted'):
+            print("Книга в архіві (продаж неможливий)")
+        else:
+            print("Книга доступна для продажу")
+
     input("\nНатисніть Enter, щоб повернутися до меню")
 
 # Видалення книги (soft delete)
 def delete_book_ui():
     print(f"\n{'=' * 45}\nВИДАЛЕННЯ КНИГИ (архівування)\n{'=' * 45}")
 
-    books = repo.db_get_books()
+    all_books = repo.db_get_books()
+    active_books = [b for b in all_books if not b.get('is_deleted')]
 
-    if not books:
-        print("\nВ базі немає книг для видалення.")
-        input("\nНатисніть Enter, щоб повернутися в меню")
+    if not active_books:
+        print("\nВ базі немає книг для видалення")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
 
     print(f"\n{'ISBN':<15} | {'Назва':<30}")
     print("-" * 45)
-    for b in books:
-        if not b.get('is_deleted', False):
-            print(f"{b['isbn']:<15} | {b['title']:<30}")
+    for b in active_books:
+        print(f"{b['isbn']:<15} | {b['title']:<30}")
     print("-" * 45)
 
-    from models import books as books_table
+    print("\nВиберіть ISBN книги зі списку вище, щоб перенести її в архів")
     delete_item_soft(books_table, "ISBN")
 
 # СПІВРОБІТНИКИ
 
 # Штат співробітників (Звіт 1)
 def show_employees_report():
-    print(f"\n{'=' * 85}\nСПИСОК СПІВРОБІТНИКІВ (ШТАТ)\n{'=' * 85}")
-    data = repo.db_get_all_employees()
+    print(f"\n{'=' * 105}\nСПИСОК СПІВРОБІТНИКІВ (ШТАТ)\n{'=' * 105}")
+    active_employees = repo.db_get_active_employees()
 
-    if not data:
-        print("У штаті поки немає жодного співробітника.")
+    if not active_employees:
+        print("Активних співробітників не знайдено")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
-    header = f"{'ID':<4} | {'ПІБ':<20} | {'Посада':<15} | {'Телефон':<13} | {'Email':<20}"
-    print(header)
-    print("-" * 85)
 
-    for e in data:
-        name = e['full_name'][:20]
-        pos = e['position'][:15]
+    header = f"{'ID':<4} | {'ПІБ':<25} | {'Посада':<25} | {'Телефон':<13} | {'Email':<25}"
+    print(header)
+    print("-" * 105)
+
+    for e in active_employees:
+        name = e['full_name']
+        pos = e['position']
         tel = e['phone'] if e['phone'] else "-"
         mail = e['email'] if e['email'] else "-"
-        print(f"{e['id']:<4} | {name:<20} | {pos:<15} | {tel:<13} | {mail:<20}")
+        print(f"{e['id']:<4} | {name:<25} | {pos:<25} | {tel:<13} | {mail:<25}")
 
-    print(f"\n{'-' * 45}")
+    print(f"\n{'-' * 105}")
+    print(f"Всього активних співробітників: {len(active_employees)}")
 
-    confirm = input("Зберегти дані у CSV? (y/n): ").strip().lower()
+    confirm = input("Зберегти список співробітників у CSV? (y/n): ").strip().lower()
     if confirm == 'y':
         from datetime import datetime
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-        filename = f"employees_contacts_{timestamp}.csv"
-        export_to_csv(data, filename)
+        filename = f"active_employees_{timestamp}.csv"
+        export_to_csv(active_employees, filename)
+
+    input("\nНатисніть Enter, щоб повернутися до меню")
 
 # Додати співробітника
 def add_employee_cli():
     print(f"\n{'=' * 45}\nНОВИЙ СПІВРОБІТНИК\n{'=' * 45}")
 
     while True:
-        name = input("ПІБ: ").strip()
-        pos = input("Посада: ").strip()
-        if name and pos:
-            break
-        print("Помилка: ПІБ та Посада обов'язкові!")
+        name = input("ПІБ (або 0 для виходу): ").strip()
+        if name == "0": return
+        is_valid, error = validate_text(name, "ПІБ")
+        if not is_valid:
+            print(error)
+            continue
 
-    ph = input("Телефон: ").strip()
+        pos = input("Посада: ").strip()
+        is_valid, error = validate_text(pos, "Посада")
+        if not is_valid:
+            print(error)
+            continue
+        break
+
+    ph = input("Введіть телефон (натисніть Enter, щоб пропустити): ").strip()
+    if not ph:
+        ph = None
 
     while True:
-        em = input("Email: ").strip()
+        em = input("Введіть Email (обов'язково): ").strip()
+        if not em:
+            print("Email є обов'язковим полем")
+            continue
+
         is_ok, msg = validate_email(em)
-        if is_ok:
-            break
-        print(f"{msg}")
+        if not is_ok:
+            print(f"{msg}")
+            continue
+
+        existing_emp = repo.db_get_employee_by_email(em)
+
+        if existing_emp:
+            if existing_emp.get('is_deleted'):
+                print(f"\nСпівробітник із Email {em} ({existing_emp['full_name']}) є в архіві")
+                confirm = input("Поновити його в штаті? (y/n): ").strip().lower()
+
+                if confirm == 'y':
+                    if repo.db_restore_entity(emp_table, emp_table.c.email, em):
+                        print(f"Співробітника {existing_emp['full_name']} успішно поновлено")
+                        input("\nНатисніть Enter, щоб повернутися до меню")
+                        return
+                    else:
+                        return
+                else:
+                    print("Операцію скасовано. Введіть інший Email")
+                    continue
+            else:
+                print(f"Співробітник з Email {em} вже в штаті")
+                continue
+        break
 
     emp_data = {
         'full_name': name,
@@ -388,8 +590,12 @@ def add_employee_cli():
         'phone': ph,
         'email': em
     }
-    repo.db_add_employee(emp_data)
-    print(f"Співробітника {name} успішно зареєстровано")
+    try:
+        repo.db_add_employee(emp_data)
+        print(f"\nСпівробітника {name} успішно зареєстровано в системі")
+    except Exception as e:
+        print(f"\n{e}")
+
     input("\nНатисніть Enter, щоб повернутися до меню")
 
 # Редагувати дані співробітника
@@ -397,8 +603,8 @@ def edit_employee_cli():
     print(f"\n{'=' * 45}\nРЕДАГУВАННЯ ДАНИХ СПІВРОБІТНИКА\n{'=' * 45}")
     employees = repo.db_get_all_employees()
     if not employees:
-        print("В базі немає зареєстрованих співробітників.")
-        input("\nНатисніть Enter")
+        print("В базі немає зареєстрованих співробітників")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
 
     print(f"{'ID':<5} | {'ПІБ':<25} | {'Посада'}")
@@ -409,25 +615,54 @@ def edit_employee_cli():
 
     emp_id_str = input("\nВведіть ID співробітника для зміни: ").strip()
 
-    try:
-        emp_id = int(emp_id_str)
-    except ValueError:
-        print("Помилка: ID має бути числом")
-        input("\nНатисніть Enter")
+    if not emp_id_str.isdigit():
+        print("ID має бути числом")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
 
+    emp_id = int(emp_id_str)
     employee = repo.db_get_employee_by_id(emp_id)
+
     if not employee:
-        print(f"Співробітника з ID {emp_id} не знайдено.")
-        input("\nНатисніть Enter")
+        print(f"Співробітника з ID {emp_id} не знайдено")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
 
     print(f"\nЗнайдено: {employee['full_name']}")
     print("Введіть нові дані (Enter, щоб залишити без змін):")
 
-    new_name = input(f"ПІБ [{employee['full_name']}]: ").strip() or employee['full_name']
-    new_position = input(f"Посада [{employee['position']}]: ").strip() or employee['position']
-    new_phone = input(f"Телефон [{employee['phone']}]: ").strip() or employee['phone']
+    while True:
+        raw_name = input(f"ПІБ [{employee['full_name']}]: ").strip()
+        if not raw_name:
+            new_name = employee['full_name']
+            break
+        is_ok, msg = validate_text(raw_name, "ПІБ")
+        if is_ok:
+            new_name = raw_name
+            break
+        print(msg)
+
+    while True:
+        raw_pos = input(f"Посада [{employee['position']}]: ").strip()
+        if not raw_pos:
+            new_position = employee['position']
+            break
+
+        is_ok, msg = validate_text(raw_pos, "Посада")
+        if is_ok:
+            new_position = raw_pos
+            break
+        print(msg)
+
+    current_phone = employee['phone'] if employee['phone'] else "—"
+    phone_input = input(f"Телефон [{current_phone}] (введіть '0' для видалення): ").strip()
+
+    if phone_input == '0':
+        new_phone = None
+    elif not phone_input:
+        new_phone = employee['phone']
+    else:
+        new_phone = phone_input
 
     while True:
         new_email_input = input(f"Email [{employee['email']}]: ").strip()
@@ -448,28 +683,55 @@ def edit_employee_cli():
         'phone': new_phone,
         'email': new_email
     }
-    repo.db_update_employee(emp_id, updated_info)
+    try:
+        repo.db_update_employee(emp_id, updated_info)
+        print(f"\nДані співробітника {new_name} успішно оновлено")
+    except Exception as e:
+        print(f"\n{e}")
 
-    print(f"\nДані співробітника {new_name} успішно оновлено!")
+    input("\nНатисніть Enter для повернення в меню")
+
+
+def show_employee_details():
+    print(f"\n{'=' * 45}\nКАРТКА СПІВРОБІТНИКА\n{'=' * 45}")
+    emp_id = input("Введіть ID співробітника: ").strip()
+
+    if not emp_id.isdigit():
+        print("ID має бути числом")
+        input("\nНатисніть Enter, щоб повернутися до меню")
+        return
+
+    emp = repo.db_get_employee_details(int(emp_id))
+
+    if not emp:
+        print(f"Співробітника з ID {emp_id} не знайдено")
+    else:
+        status = "Звільнений / Архів" if emp.get('is_deleted') else "Активний"
+        print(f"\nСтатус:  {status}")
+        print(f"\nПІБ: {emp['full_name']}")
+        print(f"Посада: {emp['position']}")
+        print(f"Телефон: {emp['phone'] if emp['phone'] else '—'}")
+        print(f"Email: {emp['email']}")
+
     input("\nНатисніть Enter, щоб повернутися до меню")
 
 # Видалення співробітника (soft delete)
 def delete_employee_ui():
     print(f"\n{'=' * 45}\nВИДАЛЕННЯ СПІВРОБІТНИКА (звільнення)\n{'=' * 45}")
-    employees = repo.db_get_all_employees()
-    if not employees:
-        print("\n[Увага]: В базі немає активних співробітників для видалення.")
-        input("\nНатисніть Enter, щоб повернутися в меню")
+    active_employees = repo.db_get_active_employees()
+    if not active_employees:
+        print("\nВ базі немає активних співробітників для видалення")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
 
     print(f"\n{'ID':<5} | {'ПІБ':<25} | {'Посада'}")
     print("-" * 45)
-    for e in employees:
+    for e in active_employees:
         if not e.get('is_deleted', False):
             print(f"{e['id']:<5} | {e['full_name']:<25} | {e['position']}")
     print("-" * 45)
 
-    from models import employees as emp_table
+    print("\nВиберіть ID співробітника зі списку вище, щоб перенести його в архів (звільнити)")
     delete_item_soft(emp_table, "ID")
 
 # ЗВІТИ
@@ -482,13 +744,15 @@ def show_sales_by_date_report():
 
     is_valid, msg = validate_date(target_date)
     if not is_valid:
-        print(f"Помилка: {msg}")
+        print(f"{msg}")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
 
     data = repo.db_get_sales_by_date(target_date)
 
     if not data:
-        print(f"За дату {target_date} продажів не знайдено.")
+        print(f"За дату {target_date} продажів не знайдено")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
 
     print(f"\n{'ID':<5} | {'Співробітник':<20} | {'Книга':<20} | {'Ціна':<8}")
@@ -498,10 +762,16 @@ def show_sales_by_date_report():
         price = float(r['actual_price'])
         print(f"{r['id']:<5} | {r['full_name'][:20]:<20} | {r['title'][:20]:<20} | {price:>8.2f}")
 
+    total_day = sum(float(r['actual_price']) for r in data)
+    print("-" * 65)
+    print(f"{'РАЗОМ ЗА ДЕНЬ:':<48} | {total_day:>8.2f} грн")
+
     confirm = input("\nЗберегти звіт у CSV? (y/n): ").strip().lower()
     if confirm == 'y':
         filename = f"sales_day_{target_date.replace('-', '')}.csv"
         export_to_csv(data, filename)
+
+    input("\nНатисніть Enter, щоб повернутися до меню")
 
 # Продажі за період (Звіт №5)
 def show_sales_by_period_report():
@@ -512,13 +782,15 @@ def show_sales_by_period_report():
 
     is_valid, msg = validate_date_range(start, end)
     if not is_valid:
-        print(f"Помилка: {msg}")
+        print(f"{msg}")
+        input("\nНатисніть Enter для повернення до меню")
         return
 
     data = repo.db_get_sales_by_period(start, end)
 
     if not data:
-        print(f"За період з {start} по {end} продажів не знайдено.")
+        print(f"За період з {start} по {end} продажів не знайдено")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
 
     print(f"{'ID':<5} | {'Дата':<10} | {'Книга':<25} | {'Ціна':>8}")
@@ -538,34 +810,46 @@ def show_sales_by_period_report():
         filename = f"sales_period_{start}_to_{end}.csv"
         export_to_csv(data, filename)
 
+    input("\nНатисніть Enter, щоб повернутися до меню")
+
 # Звіт по співробітнику (Звіт №6)
 def show_sales_by_employee_report():
     print(f"\n{'=' * 75}\nЗВІТ: ПРОДАЖІ ПО СПІВРОБІТНИКУ\n{'=' * 75}")
 
     staff = repo.db_get_all_employees()
     if not staff:
-        print("Помилка: штат порожній.")
+        print("Штат порожній")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
 
     print("Доступні співробітники:")
     print(f"{'ID':<4} | {'ПІБ':<30} | {'Посада':<20}")
     print("-" * 60)
     for s in staff:
-        print(f"{s['id']:<4} | {s['full_name']:<30} | {s['position']:<20}")
+        status = "Архів (не в штаті)" if s.get('is_deleted') else "Активний"
+        print(f"{s['id']:<4} | {s['full_name']:<30} | {status:<12}")
 
     emp_id_in = input("\nВведіть ID співробітника для звіту (0 - повернення в меню): ").strip()
     if emp_id_in == "0": return
     if not emp_id_in.isdigit():
-        print("Помилка: ID має бути числом.")
+        print("ID має бути числом")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
     emp_id = int(emp_id_in)
 
-    data = repo.db_get_sales_by_employee(emp_id)
-    if not data:
-        print(f"Записів про продажі для ID {emp_id} не знайдено.")
+    target_emp = repo.db_get_employee_by_id(emp_id)
+    if not target_emp:
+        print(f"Співробітника з ID {emp_id} не зареєстровано в системі")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
 
-    emp_name = data[0]['full_name']
+    data = repo.db_get_sales_by_employee(emp_id)
+    if not data:
+        print(f"У співробітника {target_emp['full_name']} ще немає зареєстрованих продажів")
+        input("\nНатисніть Enter, щоб повернутися до меню")
+        return
+
+    emp_name = target_emp['full_name']
 
     print(f"\nІсторія продажів для: {emp_name}")
     print(f"{'ID':<5} | {'Дата':<10} | {'Книга':<30} | {'Ціна':>8}")
@@ -586,21 +870,27 @@ def show_sales_by_employee_report():
         filename = f"sales_emp_{emp_id}_{datetime.now().strftime('%Y%m%d')}.csv"
         export_to_csv(data, filename)
 
+    input("\nНатисніть Enter, щоб повернутися до меню")
+
 # Топ книга періоду (Звіт №7)
 def show_most_sold_book_report():
-    print(f"\n{'=' * 60}\nНАЙБІЛЬШ ПРОДАВАНА КНИГА\n{'*' * 60}")
+    print(f"\n{'=' * 60}\nНАЙБІЛЬШ ПРОДАВАНА КНИГА\n{'=' * 60}")
 
     start = input("Початок періоду (РРРР-ММ-ДД): ").strip()
     end = input("Кінець періоду (РРРР-ММ-ДД): ").strip()
 
     is_valid, msg = validate_date_range(start, end)
     if not is_valid:
-        print(f"\nПомилка: {msg}")
+        print(f"\n{msg}")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
+
     data = repo.db_get_most_sold_book(start, end)
     if not data:
-        print(f"За період з {start} по {end} продажів не було.")
+        print(f"За період з {start} по {end} продажів не було")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
+
     top_book = data[0]
     revenue = float(top_book['total_revenue'])
 
@@ -608,22 +898,26 @@ def show_most_sold_book_report():
     print(f"Назва: {top_book['title']}")
     print(f"Кількість продажів: {top_book['sales_count']} прим.")
     print(f"Загальна виручка: {revenue:,.2f} грн")
-    print(f"*" * 60)
+    print(f"=" * 60)
+
+    input("\nНатисніть Enter, щоб повернутися до меню")
 
 # Найкращий продавець (Звіт №8)
 def show_best_employee_report():
-    print(f"\n{'=' * 60}\nАНАЛІЗ: НАЙКРАЩИЙ ПРОДАВЕЦЬ ПЕРІОДУ\n{'*' * 60}")
+    print(f"\n{'=' * 60}\nАНАЛІЗ: НАЙКРАЩИЙ ПРОДАВЕЦЬ ПЕРІОДУ\n{'=' * 60}")
     start = input("Початок періоду (РРРР-ММ-ДД): ").strip()
     end = input("Кінець періоду (РРРР-ММ-ДД): ").strip()
 
     is_valid, msg = validate_date_range(start, end)
     if not is_valid:
-        print(f"\nПомилка: {msg}")
+        print(f"\n{msg}")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
 
     data = repo.db_get_best_seller_employee(start, end)
     if not data:
         print(f"За період з {start} по {end} продажів не знайдено.")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
 
     winner = data[0]
@@ -635,6 +929,8 @@ def show_best_employee_report():
     print(f"Загальна сума продажів: {revenue:.2f} грн")
     print(f"=" * 60)
 
+    input("\nНатисніть Enter, щоб повернутися до меню")
+
 # Прибуток за період (Звіт №9)
 def show_profit_report():
     print(f"\n{'=' * 60}\nПРИБУТОК ЗА ПЕРІОД\n{'=' * 60}")
@@ -644,20 +940,21 @@ def show_profit_report():
 
     is_valid, msg = validate_date_range(start, end)
     if not is_valid:
-        print(f"\nПомилка: {msg}")
+        print(f"\n{msg}")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
 
     data = repo.db_get_profit_report(start, end)
 
-    if not data or data[0].get('total_revenue') is None:
-        print(f"\nЗа період з {start} по {end} продажів не знайдено.")
-        return
-
     report = data[0]
-
     rev = float(report.get('total_revenue') or 0)
     cost = float(report.get('total_cost') or 0)
     profit = float(report.get('net_profit') or 0)
+
+    if rev == 0:
+        print(f"\nЗа період з {start} по {end} продажів не знайдено")
+        input("\nНатисніть Enter, щоб повернутися до меню")
+        return
 
     print(f"\nРезультати за період {start} — {end}:")
     print(f"{'-' * 45}")
@@ -672,23 +969,27 @@ def show_profit_report():
         filename = f"profit_report_{start}_{end}.csv"
         export_to_csv(data, filename)
 
+    input("\nНатисніть Enter, щоб повернутися до меню")
+
 # Топ автор (Звіт №10)
 def show_most_sold_author_bonus_report():
-    print(f"\n{'=' * 20}")
+    print(f"\n{'=' * 60}")
     print("НАЙПОПУЛЯРНІШИЙ АВТОР")
-    print(f"{'=' * 20}")
+    print(f"{'=' * 60}")
 
     start = input("Початок періоду (РРРР-ММ-ДД): ").strip()
     end = input("Кінець періоду (РРРР-ММ-ДД): ").strip()
 
     is_valid, msg = validate_date_range(start, end)
     if not is_valid:
-        print(f"\nПомилка: {msg}")
+        print(f"\n{msg}")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
 
     data = repo.db_get_most_sold_author(start, end)
     if not data:
-        print(f"За період з {start} по {end} продажів не знайдено.")
+        print(f"За період з {start} по {end} продажів не знайдено")
+        input("\nНатисніть Enter, щоб повернутися до меню")
         return
 
     winner = data[0]
@@ -697,23 +998,25 @@ def show_most_sold_author_bonus_report():
     print(f"\nТОП АВТОР ПЕРІОДУ:")
     print(f"Автор: {author_name}")
     print(f"Кількість проданих примірників: {winner['total_sold']} шт.")
-    print(f"{'=' * 45}")
+    print(f"{'=' * 60}")
+
+    input("\nНатисніть Enter, щоб повернутися до меню")
 
 # Топ жанр (Звіт №11)
 def show_most_sold_genre_report():
-    print(f"\n{'=' * 60}\nНАЙПОПУЛЯРНІШИЙ ЖАНР\n{'#' * 60}")
+    print(f"\n{'=' * 60}\nНАЙПОПУЛЯРНІШИЙ ЖАНР\n{'=' * 60}")
 
     start = input("Початок періоду (РРРР-ММ-ДД): ").strip()
     end = input("Кінець періоду (РРРР-ММ-ДД): ").strip()
 
     is_valid, msg = validate_date_range(start, end)
     if not is_valid:
-        print(f"\nПомилка: {msg}")
+        print(f"\n{msg}")
         return
 
     data = repo.db_get_most_sold_genre(start, end)
     if not data:
-        print(f"За період з {start} по {end} продажів не знайдено.")
+        print(f"За період з {start} по {end} продажів не знайдено")
         return
 
     winner = data[0]
@@ -723,6 +1026,8 @@ def show_most_sold_genre_report():
     print(f"Жанр: {genre_name}")
     print(f"Продано примірників: {winner['total_sold']} шт.")
     print(f"{'=' * 60}")
+
+    input("\nНатисніть Enter, щоб повернутися до меню")
 
 
 # ГОЛОВНЕ МЕНЮ
@@ -759,23 +1064,28 @@ def data_management_menu():
         print(f"{'-' * 45}")
         print("1. Додати нову книгу")
         print("2. Редагувати дані книги")
-        print("3. Видалити книгу з каталогу")
-        print("4. Додати співробітника")
-        print("5. Редагувати дані співробітника")
-        print("6. Видалити співробітника (звільнення)")
+        print("3. Переглянути деталі про книгу")
+        print("4. Видалити книгу з каталогу")
+        print("5. Додати співробітника")
+        print("6. Редагувати дані співробітника")
+        print("7. Детальна інформація про співробітника (Картка співробітника)")
+        print("8. Видалити співробітника (звільнення)")
         print("0. Головне меню")
 
         choice = input("\nОберіть дію: ").strip()
 
         if choice == "1": add_book_cli()
         elif choice == "2": edit_book_cli()
-        elif choice == "3": delete_book_ui()
-        elif choice == "4": add_employee_cli()
-        elif choice == "5": edit_employee_cli()
-        elif choice == "6": delete_employee_ui()
+        elif choice == "3": show_book_details()
+        elif choice == "4": delete_book_ui()
+        elif choice == "5": add_employee_cli()
+        elif choice == "6": edit_employee_cli()
+        elif choice == "7": show_employee_details()
+        elif choice == "8": delete_employee_ui()
         elif choice == "0": break
         else:
-            print("Невірний вибір. Будь ласка, введіть цифру від 0 до 6.")
+            print("Невірний вибір. Будь ласка, введіть цифру від 0 до 8.")
+            input("Натисніть Enter, щоб зробити вибір")
 
 
 # МЕНЮ 2 рівень ОПЕРАЦІЙНА ДІЯЛЬНІСТЬ
@@ -786,14 +1096,19 @@ def sales_operations_menu():
         print("ОПЕРАЦІЙНА ДІЯЛЬНІСТЬ")
         print(f"{'-' * 45}")
         print("1. Оформити НОВИЙ ПРОДАЖ")
-        print("2. Керування історією продажів (Редагування/Видалення)")
-        print("3. Переглянути каталог книг")
+        print("2. Переглянути деталі продажу")
+        print("3. Керування історією продажів (Редагування/Видалення)")
+        print("4. Переглянути каталог книг")
         print("0. Головне меню")
         choice = input("\nОберіть дію: ").strip()
         if choice == "1": register_sale()
-        elif choice == "2": manage_sales_crud()
-        elif choice == "3": show_all_books_report()
+        elif choice == "2": show_sale_details()
+        elif choice == "3": manage_sales_crud()
+        elif choice == "4": show_all_books_report()
         elif choice == "0": break
+        else:
+            print("Невірний вибір. Будь ласка, введіть цифру від 0 до 4.")
+            input("Натисніть Enter, щоб зробити вибір")
 
 # Підменю №2 Керування історією продажів
 
@@ -820,6 +1135,9 @@ def manage_sales_crud():
 
         elif choice == "0":
             break
+        else:
+            print("\nНевірний вибір. Будь ласка, введіть цифру від 0 до 3.")
+            input("Натисніть Enter, щоб зробити вибір")
 
 # # МЕНЮ 2 рівень  АНАЛІТИКА ТА ЗВІТНІСТЬ
 
@@ -844,8 +1162,6 @@ def analytics_reports_menu():
 
         handle_report(choice)
 
-        print("\n" + "-" * 45)
-        input("Натисніть Enter, щоб повернутися до вибору звітів")
 
 def handle_report(choice):
     if choice == "1":

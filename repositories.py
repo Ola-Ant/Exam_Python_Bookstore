@@ -1,4 +1,5 @@
 from sqlalchemy import select, insert, update, delete, func, cast, Date
+from sqlalchemy.exc import IntegrityError
 from db import engine
 from models import books, employees, sales
 from datetime import datetime
@@ -12,17 +13,52 @@ def db_get_book_by_isbn(isbn):
     result = get_data(stmt)
     return result[0] if result else None
 
+def db_check_isbn_exists(isbn):
+    stmt = select(books.c.isbn).where(books.c.isbn == isbn)
+    result = get_data(stmt)
+    return len(result) > 0
+
 def execute_change(stmt):
-    with engine.begin() as conn:
-        conn.execute(stmt)
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+    except IntegrityError as e:
+        error_text = str(e).lower()
+
+        if "unique" in error_text:
+            if "email" in error_text:
+                raise Exception("Цей Email вже закріплений за іншим співробітником")
+            if "isbn" in error_text:
+                raise Exception("Книга з таким ISBN вже є у вашому каталозі")
+            return
+
+        if "foreign key" in error_text:
+            raise Exception("Не вдалося виконати дію: цей запис пов'язаний з іншими даними в системі")
+        if "check" in error_text:
+            raise Exception("Дані не пройшли перевірку: переконайтеся, що ціни та кількість є додатними")
+        raise Exception(f"Не вдалося зберегти зміни. Будь ласка, перевірте правильність введених даних")
+
+    except Exception:
+        raise Exception("Тимчасовий збій у роботі бази даних. Спробуйте ще раз за хвилину")
 
 # Видалення Soft delete
 def db_soft_delete(table, column, value):
     stmt = update(table).where(column == value).values(is_deleted=True)
     execute_change(stmt)
 
-# CRUD ПРОДАЖІ
+# Відновлення співробітника/книги з архіву
+# (повернення в штат/відновлення книги в разі помилкового видалення або появі в продажу)
+def db_restore_entity(table, column, value):
+    try:
+        stmt = update(table).where(column == value).values(is_deleted=False)
+        execute_change(stmt)
+        return True
+    except Exception as e:
+        print(f"Виникла технічна помилка при спробі відновити запис у базі даних")
+        print("Спробуйте ще раз або зверніться до адміністратора")
+        return False
 
+# CRUD ПРОДАЖІ
 # CRUD продажі- меню №1 (історія продажів), Звіт 3
 def db_get_all_sales_history():
     stmt = select(
@@ -64,33 +100,71 @@ def db_delete_sale(sale_id):
 
 # CRUD продажі (реєстрація продажу)
 def db_add_sale(isbn, employee_id, price, quantity):
-    sale_entries = [
-        {
-            "isbn": isbn,
-            "employee_id": employee_id,
-            "sale_date": datetime.now().date(),
-            "actual_price": price
-        }
-        for _ in range(quantity)
-    ]
+    try:
+        sale_entries = [
+            {
+                "isbn": isbn,
+                "employee_id": employee_id,
+                "sale_date": datetime.now().date(),
+                "actual_price": price
+            }
+            for _ in range(quantity)
+        ]
 
-    stmt = insert(sales).values(sale_entries)
-    execute_change(stmt)
+        with engine.begin() as conn:
+            conn.execute(sales.insert().values(sale_entries))
+
+
+    except Exception as e:
+        err = str(e).lower()
+        if "foreign key" in err:
+            raise Exception("Не вдалося оформити продаж: обрана книга або співробітник не існують в базі")
+        elif "check" in err:
+            raise Exception("Ціна продажу має бути більшою за 0")
+        else:
+            raise Exception(f"Не вдалося зареєструвати продаж через технічну помилку")
+
+# Детальна інформація про продаж
+def db_get_sale_details(sale_id):
+    stmt = (
+        select(
+            sales.c.id,
+            sales.c.sale_date,
+            sales.c.actual_price,
+            books.c.title.label('book_title'),
+            books.c.cost_price,
+            employees.c.full_name.label('employee_name')
+        )
+        .select_from(
+            sales
+            .join(books, sales.c.isbn == books.c.isbn)
+            .join(employees, sales.c.employee_id == employees.c.id)
+        )
+        .where(sales.c.id == sale_id)
+    )
+
+    with engine.connect() as conn:
+        result = conn.execute(stmt).mappings().first()
+        if result:
+            data = dict(result)
+            data['profit'] = data['actual_price'] - data['cost_price']
+            return data
+        return None
 
 # CRUD КНИГИ
 
-# Додавання книги
-def db_add_book(data):
-    stmt = insert(books).values(
-        isbn=data['isbn'],
-        title=data['title'],
-        author=data['author'],
-        genre=data['genre'],
-        year_pub=data['year_pub'],
-        cost_price=data['cost_price'],
-        retail_price=data['retail_price']
-    )
-    execute_change(stmt)
+def db_add_book(book_info):
+    try:
+        with engine.begin() as conn:
+            conn.execute(books.insert().values(book_info))
+    except Exception as e:
+        err = str(e).lower()
+        if "unique" in err:
+            raise Exception(f"ISBN {book_info['isbn']} вже існує")
+        elif "check" in err:
+            raise Exception("Перевірте дані: ціна, рік та кількість мають бути більше 0")
+        else:
+            raise Exception(f"Сталася технічна помилка при додаванні книги до бази")
 
 # Каталог книг Звіт №2
 def db_get_books():
@@ -108,38 +182,70 @@ def db_update_book(isbn, updated_data):
     )
     execute_change(stmt)
 
+# Детальна інформація про книгу
+def db_get_book_details(isbn):
+    with engine.connect() as conn:
+        res = conn.execute(books.select().where(books.c.isbn == isbn)).mappings().first()
+        return dict(res) if res else None
 
 # CRUD СПІВРОБІТНИКИ
 
 # Додавання співробітника
 def db_add_employee(data):
-    stmt = insert(employees).values(
-        full_name=data['full_name'],
-        position=data['position'],
-        phone=data['phone'],
-        email=data['email'],
-        is_deleted=False
-    )
-    execute_change(stmt)
+    try:
+        stmt = insert(employees).values(
+            full_name=data['full_name'],
+            position=data['position'],
+            phone=data['phone'],
+            email=data['email'],
+            is_deleted=False
+        )
+        execute_change(stmt)
+
+    except Exception as e:
+        err = str(e).lower()
+
+        if "unique" in err:
+            raise Exception(f"Співробітник з email '{data['email']}' вже зареєстрований")
+        else:
+            raise Exception(f"Сталася технічна помилка при збереженні в базу даних")
 
 # Редагування даних співробітника
 # + Звіт №6
 def db_get_employee_by_id(emp_id):
     with engine.connect() as conn:
-        stmt = select(employees).where(
-            (employees.c.id == emp_id) & (employees.c.is_deleted == False)
-        )
-        return conn.execute(stmt).mappings().first()
+        stmt = select(employees).where(employees.c.id == emp_id)
+        res = conn.execute(stmt).mappings().first()
+        return dict(res) if res else None
+
+def db_get_employee_by_email(email):
+    with engine.connect() as conn:
+        stmt = select(employees).where(employees.c.email == email)
+        res = conn.execute(stmt).mappings().first()
+        return dict(res) if res else None
 
 def db_update_employee(emp_id, data):
-    stmt = update(employees).where(employees.c.id == emp_id).values(
-        full_name=data['full_name'],
-        position=data['position'],
-        phone=data['phone'],
-        email=data['email']
-    )
-    execute_change(stmt)
+    try:
+        stmt = update(employees).where(employees.c.id == emp_id).values(
+            full_name=data['full_name'],
+            position=data['position'],
+            phone=data['phone'],
+            email=data['email']
+        )
+        execute_change(stmt)
+    except Exception as e:
+        err = str(e).lower()
+        if "unique" in err:
+            raise Exception(f"Email '{data['email']}' вже використовується іншим співробітником")
+        else:
+            raise Exception(f"Не вдалося оновити дані. Сталася технічна помилка")
 
+# Детальна інформація про співробітника
+def db_get_employee_details(emp_id):
+    with engine.connect() as conn:
+        stmt = employees.select().where(employees.c.id == emp_id)
+        res = conn.execute(stmt).mappings().first()
+        return dict(res) if res else None
 
 # БЛОК ОПЕРАЦІЙНА ДІЯЛЬНІСТЬ
 # 1. Оформити НОВИЙ ПРОДАЖ" - описано в CRUD Продажі
@@ -151,7 +257,11 @@ def db_update_employee(emp_id, data):
 
 # БЛОК АНАЛІТИКА ТА ЗВІТНІСТЬ
 # 1. Штат співробітників (Звіт 1)
+# всі співробітники (звільнені та активні)
 def db_get_all_employees():
+    return get_data(select(employees))
+
+def db_get_active_employees():
     return get_data(select(employees).where(employees.c.is_deleted == False))
 
 # 2. Каталог книг (Звіт 2) - описано в CRUD Книги

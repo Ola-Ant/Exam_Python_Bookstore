@@ -1,12 +1,7 @@
 import cli
 
-
 def main():
     try:
-        print("=" * 30)
-        print(" СИСТЕМА УПРАВЛІННЯ КНИЖКОВИМ МАГАЗИНОМ ")
-        print("=" * 30)
-
         cli.main_menu()
 
     except KeyboardInterrupt:
